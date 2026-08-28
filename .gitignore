@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+
+# Environment variables — NEVER commit this
+.env
+
+# Generated reports
+reports/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Runtime
+*.json
+!package.json

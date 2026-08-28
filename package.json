@@ -1,0 +1,29 @@
+{
+  "name": "jira-test-case-filter",
+  "version": "1.0.0",
+  "description": "AI Agent that scans Jira user stories and filters legacy manual test cases using Claude API",
+  "type": "module",
+  "main": "src/testCaseFilterAgent.js",
+  "scripts": {
+    "start": "node src/testCaseFilterAgent.js",
+    "filter": "node src/testCaseFilterAgent.js",
+    "test": "node tests/agent.test.js"
+  },
+  "keywords": [
+    "qa",
+    "testing",
+    "ai",
+    "claude",
+    "anthropic",
+    "jira",
+    "testrail",
+    "test-automation",
+    "agentic-ai"
+  ],
+  "author": "Jaffar Zahid Lone — Senior QA Engineer",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.20.0",
+    "dotenv": "^16.0.0"
+  }
+}
