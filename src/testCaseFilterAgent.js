@@ -8,7 +8,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs";
 import path from "path";
 import { getJiraUserStories, getTestCasesBatch } from "./jiraClient.js";
-import { analyseTestCaseRelevance, classifyTestCase } from "./analyser.js";
+import { analyseTestCaseRelevance, classifyTestCase, getDefectHistory } from "./analyser.js";
 import { generateCleanupReport } from "./reporter.js";
 
 const client = new Anthropic();
@@ -206,33 +206,44 @@ export async function runTestCaseFilterAgent(
   console.log(`  Total Batches : ${totalBatches}`);
   console.log(`${"=".repeat(60)}\n`);
 
+  // Fetch defect history upfront for historical context module
+  console.log("📋 Fetching defect history for historical context analysis...");
+  const defectHistory = await getDefectHistory(projectKey);
+  console.log(`   Found ${defectHistory.length} resolved bugs in the last 12 months\n`);
+
   const messages = [
     {
       role: "user",
-      content: `You are an intelligent QA cleanup agent.
+      content: `You are an intelligent QA cleanup agent — v2.0 with confidence scoring and historical context.
 
 The project has ${totalTestCases} manual test cases accumulated over many years.
 Many are obsolete, duplicated, or no longer relevant to current functionality.
 
+Defect history loaded: ${defectHistory.length} bugs resolved in the last 12 months.
+Test cases linked to these bugs will receive a KEEP override regardless of story mapping.
+
 Your job:
 1. Fetch all active user stories from Jira for project ${projectKey}
 2. Fetch test cases in batches (process first 2 batches for this demo)
-3. For each batch — analyse relevance against current user stories
+3. For each batch — analyse relevance against current user stories using the defect history context
 4. Classify each test case as:
-   - KEEP — directly maps to an active user story
+   - KEEP — directly maps to an active user story OR caught a production bug in last 12 months
    - ARCHIVE — was valid but feature no longer active or too old
    - REMOVE — obsolete, deprecated technology, or duplicate
    - UPDATE — partially relevant but needs rewriting
-5. Generate a final cleanup report
+5. Apply confidence scoring — flag LOW confidence classifications for human review
+6. Generate a final cleanup report including human review list and historical overrides
 
-Classification criteria:
-- Test cases older than 3 years with no matching user story → ARCHIVE
-- Test cases referencing deprecated tech (Flash, IE, old APIs) → REMOVE
-- Duplicate test cases covering same scenario → REMOVE one, KEEP one
-- Test cases with partial relevance → UPDATE
-- Test cases directly mapping to active user stories → KEEP
+Classification rules:
+- Historical value override → KEEP unconditionally (HIGH confidence)
+- Deprecated technology → REMOVE (HIGH confidence)
+- Duplicate test case → REMOVE (HIGH confidence)
+- 3+ years old, no story match → ARCHIVE (MEDIUM confidence)
+- Strong story keyword match (2+) → KEEP (HIGH/MEDIUM confidence)
+- Weak story match (1 keyword) → UPDATE (MEDIUM confidence)
+- No match, not clearly outdated → ARCHIVE but flag for HUMAN REVIEW (LOW confidence)
 
-Begin now. Process 2 batches and generate the cleanup report.`,
+Begin now. Process 2 batches and generate the full cleanup report.`,
     },
   ];
 
