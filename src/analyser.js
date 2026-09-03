@@ -1,26 +1,14 @@
 // analyser.js
 // Handles test case relevance analysis and classification logic
 // Author: Jaffar Zahid Lone — Senior QA Engineer
-// v2.0 — Added confidence scoring layer and historical context module
+// v3.1 — Added structural traceability: overlapping tests kept when they
+//         cover distinct structural perspectives (error boundaries, exception
+//         conditions, high-risk paths) even if functionally similar.
 
-// ─────────────────────────────────────────
-// CONFIDENCE THRESHOLDS
-// Classifications below LOW_CONFIDENCE_THRESHOLD
-// are flagged for human review instead of actioned automatically
-// ─────────────────────────────────────────
-
-const CONFIDENCE_SCORES = {
-  HIGH: 3,    // Agent is certain — action automatically
-  MEDIUM: 2,  // Agent is fairly sure — action with note
-  LOW: 1,     // Agent is uncertain — flag for human review
-};
-
-const LOW_CONFIDENCE_THRESHOLD = CONFIDENCE_SCORES.LOW;
-
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
 // DEPRECATED TECHNOLOGY LIST
 // Add any legacy tech your project no longer uses
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
 
 const DEPRECATED_TECH = [
   "flash",
@@ -36,193 +24,115 @@ const DEPRECATED_TECH = [
   "ie9",
 ];
 
-// ─────────────────────────────────────────
-// HISTORICAL CONTEXT MODULE
-// If a test case caught a production bug in the
-// last 12 months it gets a KEEP override regardless
-// of story mapping — past failure value is a strong signal
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
+// STRUCTURAL RISK SIGNALS
+// Keywords that indicate a test covers a structural/risk perspective
+// rather than a purely functional happy path
+// ─────────────────────────────────────────────────────────────────
 
-export async function getDefectHistory(projectKey) {
-  // ── REAL IMPLEMENTATION ──
-  // Uncomment when connected to real Jira:
-  //
-  // const twelveMonthsAgo = new Date();
-  // twelveMonthsAgo.setMonth(twelveMonthsAgo.getMonth() - 12);
-  //
-  // const jql = `project=${projectKey}
-  //   AND issuetype=Bug
-  //   AND status=Done
-  //   AND resolved >= "${twelveMonthsAgo.toISOString().split('T')[0]}"`;
-  //
-  // const url = `${process.env.JIRA_BASE_URL}/rest/api/3/search?jql=${encodeURIComponent(jql)}&maxResults=1000`;
-  // const credentials = Buffer.from(`${process.env.JIRA_EMAIL}:${process.env.JIRA_TOKEN}`).toString("base64");
-  //
-  // const response = await fetch(url, {
-  //   headers: { Authorization: `Basic ${credentials}` }
-  // });
-  //
-  // const data = await response.json();
-  // return data.issues.map(issue => ({
-  //   bugId: issue.key,
-  //   title: issue.fields.summary,
-  //   resolvedDate: issue.fields.resolutiondate,
-  //   linkedTestCases: issue.fields.customfield_testcases || [],
-  // }));
+const STRUCTURAL_RISK_SIGNALS = [
+  // Error boundary & exception conditions
+  "invalid",
+  "error",
+  "exception",
+  "fail",
+  "failure",
+  "boundary",
+  "edge case",
+  "negative",
+  "unauthor",
+  "forbidden",
+  "reject",
+  "denied",
+  // High-risk structural paths
+  "concurrent",
+  "race condition",
+  "timeout",
+  "overflow",
+  "null",
+  "empty",
+  "missing",
+  "expired",
+  "corrupt",
+  "malformed",
+  "injection",
+  "xss",
+  "sql",
+  "security",
+  // Performance and load structural tests
+  "load",
+  "stress",
+  "spike",
+  "volume",
+  "maximum",
+  "minimum",
+  "limit",
+];
 
-  // ── MOCK DATA (remove when using real Jira) ──
-  return [
-    {
-      bugId: "BUG-441",
-      title: "Doctor patient history not loading correctly",
-      resolvedDate: "2025-11-15",
-      linkedTestCases: ["TC-003"],
-    },
-    {
-      bugId: "BUG-389",
-      title: "Billing report export failing for large datasets",
-      resolvedDate: "2025-09-22",
-      linkedTestCases: ["TC-005", "TC-010"],
-    },
-    {
-      bugId: "BUG-512",
-      title: "Appointment confirmation email not sent",
-      resolvedDate: "2026-01-10",
-      linkedTestCases: ["TC-006"],
-    },
-  ];
-}
-
-function buildHistoricalKeepSet(defectHistory) {
-  // Build a set of test case IDs that caught real bugs in the last 12 months
-  const keepSet = new Set();
-  const twelveMonthsAgo = new Date();
-  twelveMonthsAgo.setMonth(twelveMonthsAgo.getMonth() - 12);
-
-  defectHistory.forEach((defect) => {
-    const resolvedDate = new Date(defect.resolvedDate);
-    if (resolvedDate >= twelveMonthsAgo) {
-      defect.linkedTestCases.forEach((tcId) => keepSet.add(tcId));
-    }
-  });
-
-  return keepSet;
-}
-
-// ─────────────────────────────────────────
-// CONFIDENCE SCORING LAYER
-// Evaluates how confident the agent is in its classification
-// Low confidence → flagged for human review
-// ─────────────────────────────────────────
-
-function calculateConfidence(factors) {
-  const {
-    isDeprecated,
-    isDuplicate,
-    isOutdated,
-    overlapCount,
-    hasHistoricalValue,
-    yearAge,
-  } = factors;
-
-  // High confidence scenarios — agent is certain
-  if (isDeprecated) return "HIGH";
-  if (isDuplicate) return "HIGH";
-  if (hasHistoricalValue) return "HIGH";
-  if (overlapCount >= 3) return "HIGH";
-
-  // Medium confidence scenarios — agent is fairly sure
-  if (overlapCount === 2) return "MEDIUM";
-  if (isOutdated && overlapCount === 0) return "MEDIUM";
-  if (overlapCount === 1 && yearAge <= 2) return "MEDIUM";
-
-  // Low confidence — flag for human review
-  return "LOW";
-}
-
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
 // ANALYSE BATCH — Compare Against User Stories
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
 
-export async function analyseTestCaseRelevance(
-  testCases,
-  userStories,
-  defectHistory = []
-) {
+export async function analyseTestCaseRelevance(testCases, userStories) {
   // Build keyword pool from all active user stories
   const storyKeywords = userStories.flatMap((s) =>
     s.title
       .toLowerCase()
       .split(/\s+/)
-      .filter((w) => w.length > 3)
+      .filter((w) => w.length > 3) // ignore short words like "the", "can", "a"
   );
-
-  // Build historical keep set from defect history
-  const historicalKeepSet = buildHistoricalKeepSet(defectHistory);
 
   // Track titles for duplicate detection
   const seenTitles = new Map();
 
-  const currentYear = new Date().getFullYear();
+  // Track functional groupings for structural overlap detection
+  // Key: normalised functional area (e.g. "booking", "payment")
+  // Value: array of test case IDs already classified as KEEP in that area
+  const functionalGroups = new Map();
 
   const results = testCases.map((tc) => {
     const titleLower = tc.title.toLowerCase();
-    const titleWords = titleLower.split(/\s+/).filter((w) => w.length > 3);
+    const titleWords = titleLower
+      .split(/\s+/)
+      .filter((w) => w.length > 3);
     const year = parseInt(tc.last_updated.split("-")[0]);
-    const yearAge = currentYear - year;
     const overlap = titleWords.filter((w) => storyKeywords.includes(w));
 
-    // ── Check 1: Historical Value Override ──
-    // If this test caught a real bug in the last 12 months
-    // it gets an unconditional KEEP regardless of story mapping
-    const hasHistoricalValue = historicalKeepSet.has(tc.id);
-    if (hasHistoricalValue) {
-      return {
-        id: tc.id,
-        title: tc.title,
-        classification: "KEEP",
-        confidence: "HIGH",
-        override: "HISTORICAL_VALUE",
-        reason: `KEEP OVERRIDE — This test case caught a production bug in the last 12 months. Historical failure value overrides story mapping check.`,
-        requires_human_review: false,
-      };
-    }
-
-    // ── Check 2: Deprecated Technology ──
+    // ── Check 1: Deprecated Technology ──
     const isDeprecated = DEPRECATED_TECH.some((tech) =>
       titleLower.includes(tech)
     );
 
-    // ── Check 3: Duplicate Detection ──
+    // ── Check 2: Exact Duplicate Detection ──
     const normalised = titleLower.replace(/\s+/g, " ").trim();
     const isDuplicate = seenTitles.has(normalised);
     if (!isDuplicate) seenTitles.set(normalised, tc.id);
 
-    // ── Check 4: Age + No Story Match ──
-    const isOutdated = yearAge > 3 && overlap.length === 0;
+    // ── Check 3: Age + No Story Match ──
+    const currentYear = new Date().getFullYear();
+    const isOutdated = currentYear - year > 3 && overlap.length === 0;
 
-    // ── Calculate Confidence Score ──
-    const confidence = calculateConfidence({
-      isDeprecated,
-      isDuplicate,
-      isOutdated,
-      overlapCount: overlap.length,
-      hasHistoricalValue,
-      yearAge,
-    });
+    // ── Check 4: Structural Risk Signal ──
+    // Detects whether this test covers a structural/risk perspective
+    // (error boundaries, exception conditions, security, performance limits)
+    // even if it overlaps functionally with another test case
+    const hasStructuralSignal = STRUCTURAL_RISK_SIGNALS.some((signal) =>
+      titleLower.includes(signal)
+    );
 
-    const requiresHumanReview =
-      CONFIDENCE_SCORES[confidence] <= LOW_CONFIDENCE_THRESHOLD;
+    // Detect functional area from overlapping story keywords
+    const functionalArea = overlap.slice(0, 2).join("_") || "general";
 
     // ── Classification Logic ──
+
     if (isDeprecated) {
       return {
         id: tc.id,
         title: tc.title,
         classification: "REMOVE",
-        confidence,
         reason: "References deprecated technology — no longer relevant",
-        requires_human_review: requiresHumanReview,
+        confidence: "HIGH",
+        structural_keep_reason: null,
       };
     }
 
@@ -231,9 +141,9 @@ export async function analyseTestCaseRelevance(
         id: tc.id,
         title: tc.title,
         classification: "REMOVE",
-        confidence,
-        reason: `Duplicate of ${seenTitles.get(normalised)} — same scenario already covered`,
-        requires_human_review: requiresHumanReview,
+        reason: `Exact duplicate of ${seenTitles.get(normalised)} — same scenario already covered`,
+        confidence: "HIGH",
+        structural_keep_reason: null,
       };
     }
 
@@ -242,21 +152,48 @@ export async function analyseTestCaseRelevance(
         id: tc.id,
         title: tc.title,
         classification: "ARCHIVE",
-        confidence,
         reason: `Last updated ${tc.last_updated} — no matching active user story found`,
-        requires_human_review: requiresHumanReview,
+        confidence: "MEDIUM",
+        structural_keep_reason: null,
       };
     }
 
     if (overlap.length >= 2) {
-      return {
-        id: tc.id,
-        title: tc.title,
-        classification: "KEEP",
-        confidence,
-        reason: `Directly maps to active user story — matching keywords: ${overlap.join(", ")}`,
-        requires_human_review: requiresHumanReview,
-      };
+      // Check if another test in the same functional area is already KEEP
+      const existingKeepInArea = functionalGroups.get(functionalArea);
+
+      if (existingKeepInArea && hasStructuralSignal) {
+        // Functionally overlapping BUT covers a distinct structural/risk
+        // perspective — both should be kept, with explicit reason surfaced
+        const structuralReason = buildStructuralKeepReason(titleLower);
+
+        functionalGroups.set(functionalArea, [
+          ...(functionalGroups.get(functionalArea) || []),
+          tc.id,
+        ]);
+
+        return {
+          id: tc.id,
+          title: tc.title,
+          classification: "KEEP",
+          reason: `Maps to active user story — matching keywords: ${overlap.join(", ")}`,
+          confidence: "HIGH",
+          structural_keep_reason: structuralReason,
+          note: `Functionally overlaps with ${existingKeepInArea[0]} but retained — covers a distinct structural/risk perspective. Reviewer: verify this addresses a unique error boundary or exception condition not covered by the other test.`,
+        };
+      } else {
+        // First KEEP in this functional area — straightforward
+        functionalGroups.set(functionalArea, [tc.id]);
+
+        return {
+          id: tc.id,
+          title: tc.title,
+          classification: "KEEP",
+          reason: `Directly maps to active user story — matching keywords: ${overlap.join(", ")}`,
+          confidence: "HIGH",
+          structural_keep_reason: null,
+        };
+      }
     }
 
     if (overlap.length === 1) {
@@ -264,26 +201,21 @@ export async function analyseTestCaseRelevance(
         id: tc.id,
         title: tc.title,
         classification: "UPDATE",
-        confidence,
         reason: `Partially relevant — weak match on: ${overlap.join(", ")}. Needs review against current requirements`,
-        requires_human_review: requiresHumanReview,
+        confidence: "MEDIUM",
+        structural_keep_reason: null,
       };
     }
 
-    // Low confidence — no story match, not outdated enough to archive confidently
     return {
       id: tc.id,
       title: tc.title,
       classification: "ARCHIVE",
+      reason: "No matching user story found — candidate for archiving",
       confidence: "LOW",
-      reason: "No matching user story found — low confidence, flagged for human review",
-      requires_human_review: true,
+      structural_keep_reason: null,
     };
   });
-
-  // Separate high confidence from low confidence results
-  const humanReviewRequired = results.filter((r) => r.requires_human_review);
-  const actionable = results.filter((r) => !r.requires_human_review);
 
   return {
     status: "success",
@@ -294,23 +226,83 @@ export async function analyseTestCaseRelevance(
       archive: results.filter((r) => r.classification === "ARCHIVE").length,
       remove: results.filter((r) => r.classification === "REMOVE").length,
       update: results.filter((r) => r.classification === "UPDATE").length,
-      historical_overrides: results.filter((r) => r.override === "HISTORICAL_VALUE").length,
-      requires_human_review: humanReviewRequired.length,
-      auto_actionable: actionable.length,
+      structural_keeps: results.filter(
+        (r) => r.classification === "KEEP" && r.structural_keep_reason
+      ).length,
     },
   };
 }
 
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
+// BUILD STRUCTURAL KEEP REASON
+// Generates a human-readable explanation of why a functionally
+// overlapping test is still retained based on structural signals
+// ─────────────────────────────────────────────────────────────────
+
+function buildStructuralKeepReason(titleLower) {
+  if (
+    titleLower.includes("invalid") ||
+    titleLower.includes("error") ||
+    titleLower.includes("exception") ||
+    titleLower.includes("fail")
+  ) {
+    return "STRUCTURAL_KEEP: Covers error boundary or exception condition — tests a failure path not covered by the functionally similar test. Both perspectives (success path + failure path) are required for complete coverage.";
+  }
+
+  if (
+    titleLower.includes("unauthor") ||
+    titleLower.includes("forbidden") ||
+    titleLower.includes("denied") ||
+    titleLower.includes("security") ||
+    titleLower.includes("injection") ||
+    titleLower.includes("xss")
+  ) {
+    return "STRUCTURAL_KEEP: Covers a security boundary condition — tests access control or injection risk that functional tests do not address. High-risk path warrants independent test case.";
+  }
+
+  if (
+    titleLower.includes("concurrent") ||
+    titleLower.includes("race") ||
+    titleLower.includes("load") ||
+    titleLower.includes("stress") ||
+    titleLower.includes("volume")
+  ) {
+    return "STRUCTURAL_KEEP: Covers a performance or concurrency boundary — tests system behaviour under load or race conditions that functional tests cannot simulate.";
+  }
+
+  if (
+    titleLower.includes("null") ||
+    titleLower.includes("empty") ||
+    titleLower.includes("missing") ||
+    titleLower.includes("boundary") ||
+    titleLower.includes("edge")
+  ) {
+    return "STRUCTURAL_KEEP: Covers a data boundary or edge case — tests behaviour with null, empty, or extreme values not exercised by the standard functional test.";
+  }
+
+  if (
+    titleLower.includes("expired") ||
+    titleLower.includes("timeout") ||
+    titleLower.includes("corrupt") ||
+    titleLower.includes("malformed")
+  ) {
+    return "STRUCTURAL_KEEP: Covers a data integrity or state boundary — tests behaviour with corrupted, expired, or malformed input that the functional test does not cover.";
+  }
+
+  return "STRUCTURAL_KEEP: Covers a distinct structural risk perspective from the functionally similar test. Reviewer should verify this addresses a unique error boundary, exception condition, or high-risk path before archiving.";
+}
+
+// ─────────────────────────────────────────────────────────────────
 // CLASSIFY — Single Test Case
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
 
 export async function classifyTestCase(
   testCaseId,
   testCaseTitle,
   classification,
   reason,
-  linkedUserStory = null
+  linkedUserStory = null,
+  structuralKeepReason = null
 ) {
   return {
     status: "classified",
@@ -319,6 +311,7 @@ export async function classifyTestCase(
     classification,
     reason,
     linked_user_story: linkedUserStory,
+    structural_keep_reason: structuralKeepReason,
     classified_at: new Date().toISOString(),
   };
 }
